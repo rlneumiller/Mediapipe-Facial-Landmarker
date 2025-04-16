@@ -3,6 +3,110 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import os
+
+# Try to import TensorFlow, but continue if not available
+TF_AVAILABLE = False
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers.experimental.preprocessing import Rescaling
+    from tensorflow.keras.layers import Conv2D, MaxPool2D, Dense, Dropout, Flatten, BatchNormalization
+    from tensorflow.keras.losses import categorical_crossentropy
+    from tensorflow.keras.optimizers import Adam
+    TF_AVAILABLE = True
+    print("TensorFlow successfully imported. Emotion recognition enabled.")
+except ImportError:
+    print("TensorFlow not available. Emotion recognition will be disabled.")
+
+# Define emotions dictionary with labels and colors
+emotions = {
+    0: ['Angry', (0, 0, 255), (255, 255, 255)],
+    1: ['Disgust', (0, 102, 0), (255, 255, 255)],
+    2: ['Fear', (255, 255, 153), (0, 51, 51)],
+    3: ['Happy', (153, 0, 153), (255, 255, 255)],
+    4: ['Sad', (255, 0, 0), (255, 255, 255)],
+    5: ['Surprise', (0, 255, 0), (255, 255, 255)],
+    6: ['Neutral', (160, 160, 160), (255, 255, 255)]
+}
+
+# Model paths
+model_path_1 = os.path.join(os.path.dirname(__file__), 'models', 'vggnet.h5')
+model_path_2 = os.path.join(os.path.dirname(__file__), 'models', 'vggnet_up.h5')
+
+# Define input shape and number of classes
+input_shape = (48, 48, 1)
+num_classes = len(emotions)
+
+# Global variables for models
+MODEL_1, MODEL_2 = None, None
+
+if TF_AVAILABLE:
+    class VGGNet(Sequential):
+        def __init__(self, input_shape, num_classes, checkpoint_path, lr=1e-3):
+            super().__init__()
+            self.add(Rescaling(1./255, input_shape=input_shape))
+            self.add(Conv2D(64, (3, 3), activation='relu', kernel_initializer='he_normal'))
+            self.add(BatchNormalization())
+            self.add(Conv2D(64, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same'))
+            self.add(BatchNormalization())
+            self.add(MaxPool2D())
+            self.add(Dropout(0.5))
+
+            self.add(Conv2D(128, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same'))
+            self.add(BatchNormalization())
+            self.add(Conv2D(128, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same'))
+            self.add(BatchNormalization())
+            self.add(MaxPool2D())
+            self.add(Dropout(0.4))
+
+            self.add(Conv2D(256, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same'))
+            self.add(BatchNormalization())
+            self.add(Conv2D(256, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same'))
+            self.add(BatchNormalization())
+            self.add(MaxPool2D())
+            self.add(Dropout(0.5))
+
+            self.add(Conv2D(512, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same'))
+            self.add(BatchNormalization())
+            self.add(Conv2D(512, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same'))
+            self.add(BatchNormalization())
+            self.add(MaxPool2D())
+            self.add(Dropout(0.4))
+
+            self.add(Flatten())
+            
+            self.add(Dense(1024, activation='relu'))
+            self.add(Dropout(0.5))
+            self.add(Dense(256, activation='relu'))
+
+            self.add(Dense(num_classes, activation='softmax'))
+
+            self.compile(optimizer=Adam(learning_rate=lr),
+                        loss=categorical_crossentropy,
+                        metrics=['accuracy'])
+            
+            self.checkpoint_path = checkpoint_path
+
+    # Load the models if they exist
+    def load_emotion_models():
+        print("Loading emotion recognition models...")
+        
+        try:
+            model_1 = VGGNet(input_shape, num_classes, model_path_1)
+            model_1.load_weights(model_1.checkpoint_path)
+            
+            model_2 = VGGNet(input_shape, num_classes, model_path_2)
+            model_2.load_weights(model_2.checkpoint_path)
+            
+            print("Models loaded successfully.")
+            return model_1, model_2
+        except Exception as e:
+            print(f"Error loading models: {e}")
+            return None, None
+
+    # Try to load models if TensorFlow is available
+    MODEL_1, MODEL_2 = load_emotion_models()
 
 def find_closest_face(multi_face_landmarks, image_width, image_height):
     """
@@ -27,6 +131,107 @@ def find_closest_face(multi_face_landmarks, image_width, image_height):
             closest_face_idx = i
             
     return closest_face_idx
+
+def extract_face_from_landmarks(face_landmarks, image, padding=0.1):
+    """
+    Extract a face region using facial landmarks with padding.
+    Returns the cropped face and its bounding box.
+    """
+    # Get image dimensions
+    height, width = image.shape[:2]
+    
+    # Extract x,y coordinates from landmarks
+    x_coords = [landmark.x * width for landmark in face_landmarks.landmark]
+    y_coords = [landmark.y * height for landmark in face_landmarks.landmark]
+    
+    # Calculate bounding box with padding
+    x_min = max(0, int(min(x_coords) - padding * width))
+    y_min = max(0, int(min(y_coords) - padding * height))
+    x_max = min(width, int(max(x_coords) + padding * width))
+    y_max = min(height, int(max(y_coords) + padding * height))
+    
+    # Ensure we have a valid box
+    if x_min >= x_max or y_min >= y_max:
+        return None, (0, 0, 0, 0)
+    
+    # Crop face
+    face_crop = image[y_min:y_max, x_min:x_max]
+    
+    return face_crop, (x_min, y_min, x_max, y_max)
+
+def preprocess_face(face_crop):
+    """
+    Preprocess the face image for the emotion recognition model:
+    - Convert to grayscale
+    - Resize to 48x48
+    - Prepare for model input
+    """
+    if face_crop is None or face_crop.size == 0:
+        return None
+    
+    try:
+        # Convert to grayscale
+        gray_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+        
+        # Resize to 48x48
+        resized_face = cv2.resize(gray_face, (48, 48))
+        
+        # Add channel dimension and expand to batch
+        processed_face = np.expand_dims(resized_face, axis=-1)
+        processed_face = np.expand_dims(processed_face, axis=0)
+        
+        return processed_face
+    except Exception as e:
+        print(f"Error in preprocessing face: {e}")
+        return None
+
+def detect_emotion(face_landmarks, image):
+    """
+    Detect emotion using the VGGNet models.
+    Returns the emotion label, color for display, and face bounding box.
+    """
+    global MODEL_1, MODEL_2, TF_AVAILABLE
+    
+    # If TensorFlow is not available or models are not loaded, use traditional detection
+    if not TF_AVAILABLE or MODEL_1 is None or MODEL_2 is None:
+        # Extract face region for visualization
+        face_crop, bbox = extract_face_from_landmarks(face_landmarks, image)
+        
+        # Use traditional detection to infer emotions
+        expressions = detect_facial_expressions(face_landmarks, image.shape[1], image.shape[0])
+        
+        # Map expressions to emotions
+        if "Happy" in expressions:
+            return "Happy", emotions[3][1], bbox  # Happy
+        elif "Surprised" in expressions:
+            return "Surprise", emotions[5][1], bbox  # Surprise
+        elif "Tired/Blinking" in expressions:
+            return "Neutral", emotions[6][1], bbox  # Neutral
+        else:
+            return "Neutral", emotions[6][1], bbox  # Default to Neutral
+    
+    # Extract face from image
+    face_crop, bbox = extract_face_from_landmarks(face_landmarks, image)
+    
+    # Preprocess face
+    processed_face = preprocess_face(face_crop)
+    
+    if processed_face is None:
+        return "Unknown", (200, 200, 200), bbox
+    
+    try:
+        # Perform inference
+        prediction_1 = MODEL_1.predict(processed_face, verbose=0)
+        prediction_2 = MODEL_2.predict(processed_face, verbose=0)
+        
+        # Combine predictions and get emotion
+        combined_prediction = prediction_1 + prediction_2
+        emotion_index = np.argmax(combined_prediction)
+        
+        return emotions[emotion_index][0], emotions[emotion_index][1], bbox
+    except Exception as e:
+        print(f"Error in emotion detection: {e}")
+        return "Unknown", (200, 200, 200), bbox
 
 def detect_smile(face_landmarks, image_width, image_height):
     """
@@ -187,8 +392,11 @@ def main():
             # Process the image
             results = face_mesh.process(image_rgb)
             
-            # Variable to store facial expressions
+            # Variables to store facial expressions and emotions
             expressions = []
+            emotion = "Unknown"
+            emotion_color = (200, 200, 200)
+            emotion_bbox = (0, 0, 0, 0)
             closest_idx = 0
             
             # Draw landmarks if faces are detected
@@ -222,11 +430,32 @@ def main():
                         connection_drawing_spec=contour_specs
                     )
                     
-                    # Detect facial expressions (only for the closest face or if there's only one face)
+                    # Detect facial expressions and emotions for the closest face
                     if i == closest_idx:
+                        # Get traditional expressions for comparison
                         expressions = detect_facial_expressions(
                             face_landmarks, image.shape[1], image.shape[0]
                         )
+                        
+                        # Get deep learning-based emotion recognition
+                        emotion, emotion_color, emotion_bbox = detect_emotion(face_landmarks, image)
+                        
+                        # Draw emotion bounding box and label
+                        if emotion_bbox[2] > 0:  # Make sure we have a valid box
+                            cv2.rectangle(image, 
+                                         (emotion_bbox[0], emotion_bbox[1]), 
+                                         (emotion_bbox[2], emotion_bbox[3]), 
+                                         emotion_color, 2)
+                            
+                            # Add emotion label at the top of the box
+                            cv2.rectangle(image, 
+                                         (emotion_bbox[0], emotion_bbox[1]-25), 
+                                         (emotion_bbox[0] + 100, emotion_bbox[1]), 
+                                         emotion_color, -1)
+                            
+                            cv2.putText(image, emotion, 
+                                       (emotion_bbox[0]+5, emotion_bbox[1]-5),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             # Flip the image horizontally for selfie view AFTER drawing landmarks
             flipped_image = cv2.flip(image, 1)
@@ -235,6 +464,13 @@ def main():
             if results.multi_face_landmarks:
                 # Display detected expressions on the flipped image
                 y_position = 30
+                
+                # Display the deep learning emotion first
+                cv2.putText(flipped_image, f"Emotion: {emotion}", (10, y_position), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, emotion_color, 2)
+                y_position += 30
+                
+                # Display traditional expressions for comparison
                 for expression in expressions:
                     cv2.putText(flipped_image, expression, (10, y_position), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
