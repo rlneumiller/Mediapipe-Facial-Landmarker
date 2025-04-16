@@ -187,10 +187,13 @@ def main():
             # Process the image
             results = face_mesh.process(image_rgb)
             
+            # Variable to store facial expressions
+            expressions = []
+            closest_idx = 0
+            
             # Draw landmarks if faces are detected
             if results.multi_face_landmarks:
                 # Identify the closest face if multiple faces are detected
-                closest_idx = 0
                 if len(results.multi_face_landmarks) > 1:
                     closest_idx = find_closest_face(results.multi_face_landmarks, 
                                                    image.shape[1], image.shape[0])
@@ -224,21 +227,26 @@ def main():
                         expressions = detect_facial_expressions(
                             face_landmarks, image.shape[1], image.shape[0]
                         )
-                        
-                        # Display detected expressions
-                        y_position = 30
-                        for expression in expressions:
-                            cv2.putText(image, expression, (10, y_position), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                            y_position += 30
+            
+            # Flip the image horizontally for selfie view AFTER drawing landmarks
+            flipped_image = cv2.flip(image, 1)
+            
+            # Add text annotations to the flipped image AFTER flipping
+            if results.multi_face_landmarks:
+                # Display detected expressions on the flipped image
+                y_position = 30
+                for expression in expressions:
+                    cv2.putText(flipped_image, expression, (10, y_position), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    y_position += 30
                 
-                # Optionally add text to show which face is closest
+                # Optionally add text to show which face is closest on the flipped image
                 if len(results.multi_face_landmarks) > 1:
-                    cv2.putText(image, f"Closest face: {closest_idx+1}", (10, y_position), 
+                    cv2.putText(flipped_image, f"Closest face: {closest_idx+1}", (10, y_position), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             
-            # Display the image (flipped horizontally for selfie view)
-            cv2.imshow("Face Mesh Detection", cv2.flip(image, 1))
+            # Display the flipped image with correctly oriented text
+            cv2.imshow("Face Mesh Detection", flipped_image)
             
             # Break loop on 'q' key press
             if cv2.waitKey(5) & 0xFF == ord('q'):
