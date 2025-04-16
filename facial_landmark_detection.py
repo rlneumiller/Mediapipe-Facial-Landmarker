@@ -360,6 +360,85 @@ def detect_facial_expressions(face_landmarks, image_width, image_height):
         
     return expressions
 
+def detect_head_pose(face_landmarks, image):
+    """
+    Detect head pose using the same approach as in HeadPoseEstimation.py.
+    Returns the angles, nose points for direction visualization, and direction text.
+    """
+    img_h, img_w = image.shape[:2]
+    face_3d = []
+    face_2d = []
+    
+    # Extract specific landmarks for pose estimation
+    key_landmarks = [33, 263, 1, 61, 291, 199]
+    nose_2d, nose_3d = None, None
+    
+    for idx, lm in enumerate(face_landmarks.landmark):
+        if idx in key_landmarks:
+            x, y = int(lm.x * img_w), int(lm.y * img_h)
+            
+            # Store nose point separately
+            if idx == 1:
+                nose_2d = (lm.x * img_w, lm.y * img_h)
+                nose_3d = (lm.x * img_w, lm.y * img_h, lm.z * 3000)
+            
+            # Get the 2D coordinates
+            face_2d.append([x, y])
+            
+            # Get the 3D coordinates
+            face_3d.append([x, y, lm.z])
+    
+    # Convert to NumPy arrays
+    face_2d = np.array(face_2d, dtype=np.float64)
+    face_3d = np.array(face_3d, dtype=np.float64)
+    
+    # Camera matrix
+    focal_length = 1 * img_w
+    cam_matrix = np.array([
+        [focal_length, 0, img_h / 2],
+        [0, focal_length, img_w / 2],
+        [0, 0, 1]
+    ])
+    
+    # Distortion parameters
+    dist_matrix = np.zeros((4, 1), dtype=np.float64)
+    
+    # Solve PnP
+    success, rot_vec, trans_vec = cv2.solvePnP(face_3d, face_2d, cam_matrix, dist_matrix)
+    
+    if not success:
+        return None, None, None, None
+    
+    # Get rotational matrix
+    rmat, _ = cv2.Rodrigues(rot_vec)
+    
+    # Get angles
+    angles, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
+    
+    # Convert to degrees
+    x = angles[0] * 360  # pitch
+    y = angles[1] * 360  # yaw
+    z = angles[2] * 360  # roll
+    
+    # Determine head direction
+    if y < -10:
+        text = "Looking Left"
+    elif y > 10:
+        text = "Looking Right"
+    elif x < -10:
+        text = "Looking Down"
+    elif x > 10:
+        text = "Looking Up"
+    else:
+        text = "Forward"
+    
+    # Calculate nose direction point for visualization
+    nose_3d_projection, _ = cv2.projectPoints(nose_3d, rot_vec, trans_vec, cam_matrix, dist_matrix)
+    p1 = (int(nose_2d[0]), int(nose_2d[1]))
+    p2 = (int(nose_2d[0] + y * 10), int(nose_2d[1] - x * 10))
+    
+    return (x, y, z), (p1, p2), text
+
 def main():
     # Set up drawing utilities
     mp_drawing = mp.solutions.drawing_utils
@@ -399,6 +478,11 @@ def main():
             emotion_bbox = (0, 0, 0, 0)
             closest_idx = 0
             
+            # Variables for head pose
+            angles = None
+            nose_points = None
+            head_direction = None
+            
             # Draw landmarks if faces are detected
             if results.multi_face_landmarks:
                 # Identify the closest face if multiple faces are detected
@@ -430,7 +514,7 @@ def main():
                         connection_drawing_spec=contour_specs
                     )
                     
-                    # Detect facial expressions and emotions for the closest face
+                    # Detect facial expressions, emotions and head pose for the closest face
                     if i == closest_idx:
                         # Get traditional expressions for comparison
                         expressions = detect_facial_expressions(
@@ -439,6 +523,9 @@ def main():
                         
                         # Get deep learning-based emotion recognition
                         emotion, emotion_color, emotion_bbox = detect_emotion(face_landmarks, image)
+                        
+                        # Get head pose estimation
+                        angles, nose_points, head_direction = detect_head_pose(face_landmarks, image)
                         
                         # Draw emotion bounding box and label
                         if emotion_bbox[2] > 0:  # Make sure we have a valid box
@@ -456,6 +543,10 @@ def main():
                             cv2.putText(image, emotion, 
                                        (emotion_bbox[0]+5, emotion_bbox[1]-5),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        
+                        # Draw head pose direction line
+                        if nose_points is not None:
+                            cv2.line(image, nose_points[0], nose_points[1], (255, 0, 0), 3)
             
             # Flip the image horizontally for selfie view AFTER drawing landmarks
             flipped_image = cv2.flip(image, 1)
@@ -475,6 +566,24 @@ def main():
                     cv2.putText(flipped_image, expression, (10, y_position), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     y_position += 30
+                
+                # Display head pose information
+                if head_direction:
+                    cv2.putText(flipped_image, f"Head: {head_direction}", (10, y_position), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                    y_position += 30
+                
+                    if angles:
+                        x, y, z = angles
+                        cv2.putText(flipped_image, f"x: {np.round(x, 2)}", (10, y_position), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        y_position += 30
+                        cv2.putText(flipped_image, f"y: {np.round(y, 2)}", (10, y_position), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        y_position += 30
+                        cv2.putText(flipped_image, f"z: {np.round(z, 2)}", (10, y_position), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        y_position += 30
                 
                 # Optionally add text to show which face is closest on the flipped image
                 if len(results.multi_face_landmarks) > 1:
