@@ -2,6 +2,7 @@
 
 import cv2
 import mediapipe as mp
+import numpy as np
 
 def find_closest_face(multi_face_landmarks, image_width, image_height):
     """
@@ -26,6 +27,133 @@ def find_closest_face(multi_face_landmarks, image_width, image_height):
             closest_face_idx = i
             
     return closest_face_idx
+
+def detect_smile(face_landmarks, image_width, image_height):
+    """
+    Detect if a person is smiling based on mouth corner positions.
+    
+    Key landmarks:
+    - 61, 291: mouth corners
+    - 0: middle of upper lip
+    - 17: middle of lower lip
+    """
+    # Get mouth corner landmarks and middle point
+    left_corner = face_landmarks.landmark[61]
+    right_corner = face_landmarks.landmark[291]
+    upper_middle = face_landmarks.landmark[0]
+    lower_middle = face_landmarks.landmark[17]
+    
+    # Convert normalized coordinates to pixel coordinates
+    left_corner_px = (left_corner.x * image_width, left_corner.y * image_height)
+    right_corner_px = (right_corner.x * image_width, right_corner.y * image_height)
+    upper_middle_px = (upper_middle.x * image_width, upper_middle.y * image_height)
+    lower_middle_px = (lower_middle.x * image_width, lower_middle.y * image_height)
+    
+    # Calculate middle point between the corners
+    mid_corners_y = (left_corner_px[1] + right_corner_px[1]) / 2
+    
+    # Calculate vertical distance from middle point to mouth middle
+    mouth_middle_y = (upper_middle_px[1] + lower_middle_px[1]) / 2
+    
+    # Smiling typically means corners are higher than middle point
+    curvature = mouth_middle_y - mid_corners_y
+    
+    # Normalize by face width to make it scale-invariant
+    face_width = abs(right_corner_px[0] - left_corner_px[0])
+    normalized_curvature = curvature / face_width if face_width > 0 else 0
+    
+    # Threshold for smile detection (positive values indicate upward curve)
+    # This threshold needs to be calibrated through testing
+    smile_threshold = 0.05
+    
+    return normalized_curvature > smile_threshold
+
+def detect_open_mouth(face_landmarks, image_width, image_height):
+    """
+    Detect if mouth is open based on distance between upper and lower lip.
+    
+    Key landmarks:
+    - 13: middle of upper lip
+    - 14: middle of lower lip
+    - 61, 291: mouth corners for normalizing distance
+    """
+    # Get lip landmarks
+    upper_lip = face_landmarks.landmark[13]
+    lower_lip = face_landmarks.landmark[14]
+    left_corner = face_landmarks.landmark[61]
+    right_corner = face_landmarks.landmark[291]
+    
+    # Convert to pixel coordinates
+    upper_lip_px = (upper_lip.y * image_height)
+    lower_lip_px = (lower_lip.y * image_height)
+    
+    # Calculate vertical distance between lips
+    lip_distance = abs(lower_lip_px - upper_lip_px)
+    
+    # Normalize by face width
+    left_corner_px = (left_corner.x * image_width)
+    right_corner_px = (right_corner.x * image_width)
+    face_width = abs(right_corner_px - left_corner_px)
+    normalized_distance = lip_distance / face_width if face_width > 0 else 0
+    
+    # Threshold for open mouth detection
+    open_mouth_threshold = 0.15
+    
+    return normalized_distance > open_mouth_threshold
+
+def detect_closed_eyes(face_landmarks, image_width, image_height):
+    """
+    Detect if eyes are closed using Eye Aspect Ratio (EAR).
+    
+    Key landmarks (for left eye):
+    - 159, 145: outer corners
+    - 33, 133: upper and lower lids at center
+    """
+    # Eye landmarks (left eye)
+    left_eye_landmarks = [159, 145, 33, 133]  # Outer corners and upper/lower lids
+    
+    # Extract coordinates
+    left_eye_points = [
+        (face_landmarks.landmark[idx].x * image_width, 
+         face_landmarks.landmark[idx].y * image_height) 
+        for idx in left_eye_landmarks
+    ]
+    
+    # Calculate eye aspect ratio (EAR)
+    # EAR = distance between upper and lower lids / distance between outer corners
+    vertical_dist = abs(left_eye_points[2][1] - left_eye_points[3][1])
+    horizontal_dist = abs(left_eye_points[0][0] - left_eye_points[1][0])
+    
+    ear = vertical_dist / horizontal_dist if horizontal_dist > 0 else 0
+    
+    # Threshold for closed eyes (lower EAR means more closed eyes)
+    closed_eyes_threshold = 0.15
+    
+    return ear < closed_eyes_threshold
+
+def detect_facial_expressions(face_landmarks, image_width, image_height):
+    """Detect various facial expressions based on landmark positions."""
+    expressions = []
+    
+    # Detect individual expressions
+    if detect_smile(face_landmarks, image_width, image_height):
+        expressions.append("Smiling")
+        
+    if detect_open_mouth(face_landmarks, image_width, image_height):
+        expressions.append("Mouth Open")
+        
+    if detect_closed_eyes(face_landmarks, image_width, image_height):
+        expressions.append("Eyes Closed")
+    
+    # Combine expressions for emotion detection
+    if "Smiling" in expressions and "Eyes Closed" not in expressions:
+        expressions.append("Happy")
+    elif "Eyes Closed" in expressions and "Smiling" not in expressions:
+        expressions.append("Tired/Blinking")
+    elif "Mouth Open" in expressions and "Smiling" not in expressions:
+        expressions.append("Surprised")
+        
+    return expressions
 
 def main():
     # Set up drawing utilities
@@ -90,11 +218,24 @@ def main():
                         landmark_drawing_spec=None,
                         connection_drawing_spec=contour_specs
                     )
+                    
+                    # Detect facial expressions (only for the closest face or if there's only one face)
+                    if i == closest_idx:
+                        expressions = detect_facial_expressions(
+                            face_landmarks, image.shape[1], image.shape[0]
+                        )
+                        
+                        # Display detected expressions
+                        y_position = 30
+                        for expression in expressions:
+                            cv2.putText(image, expression, (10, y_position), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                            y_position += 30
                 
                 # Optionally add text to show which face is closest
                 if len(results.multi_face_landmarks) > 1:
-                    cv2.putText(image, f"Closest face: {closest_idx+1}", (10, 30), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    cv2.putText(image, f"Closest face: {closest_idx+1}", (10, y_position), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             
             # Display the image (flipped horizontally for selfie view)
             cv2.imshow("Face Mesh Detection", cv2.flip(image, 1))
