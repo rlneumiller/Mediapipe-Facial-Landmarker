@@ -4,6 +4,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import os
+import time
 
 # Try to import TensorFlow, but continue if not available
 TF_AVAILABLE = False
@@ -192,26 +193,23 @@ def detect_emotion(face_landmarks, image):
     """
     global MODEL_1, MODEL_2, TF_AVAILABLE
     
+    # Extract face region for visualization
+    face_crop, bbox = extract_face_from_landmarks(face_landmarks, image)
+    
     # If TensorFlow is not available or models are not loaded, use traditional detection
     if not TF_AVAILABLE or MODEL_1 is None or MODEL_2 is None:
-        # Extract face region for visualization
-        face_crop, bbox = extract_face_from_landmarks(face_landmarks, image)
-        
         # Use traditional detection to infer emotions
         expressions = detect_facial_expressions(face_landmarks, image.shape[1], image.shape[0])
         
         # Map expressions to emotions
-        if "Happy" in expressions:
+        if "Smiling" in expressions or "Happy" in expressions:
             return "Happy", emotions[3][1], bbox  # Happy
-        elif "Surprised" in expressions:
+        elif "Surprised" in expressions or "Mouth Open" in expressions:
             return "Surprise", emotions[5][1], bbox  # Surprise
-        elif "Tired/Blinking" in expressions:
+        elif "Eyes Closed" in expressions or "Tired/Blinking" in expressions:
             return "Neutral", emotions[6][1], bbox  # Neutral
         else:
             return "Neutral", emotions[6][1], bbox  # Default to Neutral
-    
-    # Extract face from image
-    face_crop, bbox = extract_face_from_landmarks(face_landmarks, image)
     
     # Preprocess face
     processed_face = preprocess_face(face_crop)
@@ -449,6 +447,21 @@ def main():
     # Initialize video capture (camera)
     cap = cv2.VideoCapture(0)  # Try 0 first, change to 1 if needed
     
+    # For MacOS, try to set camera properties
+    if not cap.isOpened():
+        print("Failed to open camera with index 0, trying index 1...")
+        cap = cv2.VideoCapture(1)
+    
+    # If still not working, try different camera APIs on MacOS
+    if not cap.isOpened():
+        print("Trying different camera API...")
+        cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)  # Use AVFoundation API on macOS
+    
+    # Check if camera opened successfully
+    if not cap.isOpened():
+        print("Error: Could not open camera. Please check camera permissions.")
+        return
+    
     # Set up face mesh
     mp_face_mesh = mp.solutions.face_mesh
     
@@ -459,147 +472,162 @@ def main():
             min_tracking_confidence=0.5
         ) as face_mesh:
         
-        while cap.isOpened():
-            success, image = cap.read()
-            if not success:
-                print("Failed to read from camera")
-                break
-            
-            # Convert to RGB for MediaPipe processing
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
-            # Process the image
-            results = face_mesh.process(image_rgb)
-            
-            # Variables to store facial expressions and emotions
-            expressions = []
-            emotion = "Unknown"
-            emotion_color = (200, 200, 200)
-            emotion_bbox = (0, 0, 0, 0)
-            closest_idx = 0
-            
-            # Variables for head pose
-            angles = None
-            nose_points = None
-            head_direction = None
-            
-            # Draw landmarks if faces are detected
-            if results.multi_face_landmarks:
-                # Identify the closest face if multiple faces are detected
-                if len(results.multi_face_landmarks) > 1:
-                    closest_idx = find_closest_face(results.multi_face_landmarks, 
-                                                   image.shape[1], image.shape[0])
+        try:
+            while cap.isOpened():
+                success, image = cap.read()
+                if not success:
+                    print("Failed to read frame from camera")
+                    # On MacOS, sometimes we need to retry a few times
+                    retry_count = 0
+                    while not success and retry_count < 3:
+                        success, image = cap.read()
+                        retry_count += 1
+                        time.sleep(0.1)  # Short delay between retries
+                    
+                    if not success:
+                        print("Failed to read from camera after retries")
+                        break
                 
-                # Draw each face with appropriate styling
-                for i, face_landmarks in enumerate(results.multi_face_landmarks):
-                    # Use different color for the closest face
-                    contour_specs = closest_face_specs if i == closest_idx else my_drawing_specs
+                # Convert to RGB for MediaPipe processing
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                
+                # Process the image
+                results = face_mesh.process(image_rgb)
+                
+                # Variables to store facial expressions and emotions
+                expressions = []
+                emotion = "Unknown"
+                emotion_color = (200, 200, 200)
+                emotion_bbox = (0, 0, 0, 0)
+                closest_idx = 0
+                
+                # Variables for head pose
+                angles = None
+                nose_points = None
+                head_direction = None
+                
+                # Draw landmarks if faces are detected
+                if results.multi_face_landmarks:
+                    # Identify the closest face if multiple faces are detected
+                    if len(results.multi_face_landmarks) > 1:
+                        closest_idx = find_closest_face(results.multi_face_landmarks, 
+                                                       image.shape[1], image.shape[0])
                     
-                    # Draw face mesh tesselation
-                    mp_drawing.draw_landmarks(
-                        image=image,
-                        landmark_list=face_landmarks,
-                        connections=mp_face_mesh.FACEMESH_TESSELATION,
-                        landmark_drawing_spec=None,
-                        connection_drawing_spec=mp_drawing_styles
-                        .get_default_face_mesh_tesselation_style()
-                    )
-                    
-                    # Draw face mesh contours
-                    mp_drawing.draw_landmarks(
-                        image=image,
-                        landmark_list=face_landmarks,
-                        connections=mp_face_mesh.FACEMESH_CONTOURS,
-                        landmark_drawing_spec=None,
-                        connection_drawing_spec=contour_specs
-                    )
-                    
-                    # Detect facial expressions, emotions and head pose for the closest face
-                    if i == closest_idx:
-                        # Get traditional expressions for comparison
-                        expressions = detect_facial_expressions(
-                            face_landmarks, image.shape[1], image.shape[0]
+                    # Draw each face with appropriate styling
+                    for i, face_landmarks in enumerate(results.multi_face_landmarks):
+                        # Use different color for the closest face
+                        contour_specs = closest_face_specs if i == closest_idx else my_drawing_specs
+                        
+                        # Draw face mesh tesselation
+                        mp_drawing.draw_landmarks(
+                            image=image,
+                            landmark_list=face_landmarks,
+                            connections=mp_face_mesh.FACEMESH_TESSELATION,
+                            landmark_drawing_spec=None,
+                            connection_drawing_spec=mp_drawing_styles
+                            .get_default_face_mesh_tesselation_style()
                         )
                         
-                        # Get deep learning-based emotion recognition
-                        emotion, emotion_color, emotion_bbox = detect_emotion(face_landmarks, image)
+                        # Draw face mesh contours
+                        mp_drawing.draw_landmarks(
+                            image=image,
+                            landmark_list=face_landmarks,
+                            connections=mp_face_mesh.FACEMESH_CONTOURS,
+                            landmark_drawing_spec=None,
+                            connection_drawing_spec=contour_specs
+                        )
                         
-                        # Get head pose estimation
-                        angles, nose_points, head_direction = detect_head_pose(face_landmarks, image)
-                        
-                        # Draw emotion bounding box and label
-                        if emotion_bbox[2] > 0:  # Make sure we have a valid box
-                            cv2.rectangle(image, 
-                                         (emotion_bbox[0], emotion_bbox[1]), 
-                                         (emotion_bbox[2], emotion_bbox[3]), 
-                                         emotion_color, 2)
+                        # Detect facial expressions, emotions and head pose for the closest face
+                        if i == closest_idx:
+                            # Get traditional expressions for comparison
+                            expressions = detect_facial_expressions(
+                                face_landmarks, image.shape[1], image.shape[0]
+                            )
                             
-                            # Add emotion label at the top of the box
-                            cv2.rectangle(image, 
-                                         (emotion_bbox[0], emotion_bbox[1]-25), 
-                                         (emotion_bbox[0] + 100, emotion_bbox[1]), 
-                                         emotion_color, -1)
+                            # Get deep learning-based emotion recognition
+                            emotion, emotion_color, emotion_bbox = detect_emotion(face_landmarks, image)
                             
-                            cv2.putText(image, emotion, 
-                                       (emotion_bbox[0]+5, emotion_bbox[1]-5),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                            # Get head pose estimation
+                            angles, nose_points, head_direction = detect_head_pose(face_landmarks, image)
+                            
+                            # Draw emotion bounding box and label
+                            if emotion_bbox[2] > 0:  # Make sure we have a valid box
+                                cv2.rectangle(image, 
+                                             (emotion_bbox[0], emotion_bbox[1]), 
+                                             (emotion_bbox[2], emotion_bbox[3]), 
+                                             emotion_color, 2)
+                                
+                                # Add emotion label at the top of the box
+                                cv2.rectangle(image, 
+                                             (emotion_bbox[0], emotion_bbox[1]-25), 
+                                             (emotion_bbox[0] + 100, emotion_bbox[1]), 
+                                             emotion_color, -1)
+                                
+                                cv2.putText(image, emotion, 
+                                           (emotion_bbox[0]+5, emotion_bbox[1]-5),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                            
+                            # Draw head pose direction line
+                            if nose_points is not None:
+                                cv2.line(image, nose_points[0], nose_points[1], (255, 0, 0), 3)
+                
+                # Flip the image horizontally for selfie view AFTER drawing landmarks
+                flipped_image = cv2.flip(image, 1)
+                
+                # Add text annotations to the flipped image AFTER flipping
+                if results.multi_face_landmarks:
+                    # Display detected expressions on the flipped image
+                    y_position = 30
+                    
+                    # Display the deep learning emotion first
+                    cv2.putText(flipped_image, f"Emotion: {emotion}", (10, y_position), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, emotion_color, 2)
+                    y_position += 30
+                    
+                    # Display traditional expressions for comparison
+                    for expression in expressions:
+                        cv2.putText(flipped_image, expression, (10, y_position), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        y_position += 30
+                    
+                    # Display head pose information
+                    if head_direction:
+                        cv2.putText(flipped_image, f"Head: {head_direction}", (10, y_position), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                        y_position += 30
                         
-                        # Draw head pose direction line
-                        if nose_points is not None:
-                            cv2.line(image, nose_points[0], nose_points[1], (255, 0, 0), 3)
-            
-            # Flip the image horizontally for selfie view AFTER drawing landmarks
-            flipped_image = cv2.flip(image, 1)
-            
-            # Add text annotations to the flipped image AFTER flipping
-            if results.multi_face_landmarks:
-                # Display detected expressions on the flipped image
-                y_position = 30
+                        if angles:
+                            x, y, z = angles
+                            cv2.putText(flipped_image, f"x: {np.round(x, 2)}", (10, y_position), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            y_position += 30
+                            cv2.putText(flipped_image, f"y: {np.round(y, 2)}", (10, y_position), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            y_position += 30
+                            cv2.putText(flipped_image, f"z: {np.round(z, 2)}", (10, y_position), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            y_position += 30
+                    
+                    # Optionally add text to show which face is closest on the flipped image
+                    if len(results.multi_face_landmarks) > 1:
+                        cv2.putText(flipped_image, f"Closest face: {closest_idx+1}", (10, y_position), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
-                # Display the deep learning emotion first
-                cv2.putText(flipped_image, f"Emotion: {emotion}", (10, y_position), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, emotion_color, 2)
-                y_position += 30
+                # Display the flipped image with correctly oriented text
+                cv2.imshow("Face Mesh Detection", flipped_image)
                 
-                # Display traditional expressions for comparison
-                for expression in expressions:
-                    cv2.putText(flipped_image, expression, (10, y_position), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    y_position += 30
-                
-                # Display head pose information
-                if head_direction:
-                    cv2.putText(flipped_image, f"Head: {head_direction}", (10, y_position), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-                    y_position += 30
-                
-                    if angles:
-                        x, y, z = angles
-                        cv2.putText(flipped_image, f"x: {np.round(x, 2)}", (10, y_position), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        y_position += 30
-                        cv2.putText(flipped_image, f"y: {np.round(y, 2)}", (10, y_position), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        y_position += 30
-                        cv2.putText(flipped_image, f"z: {np.round(z, 2)}", (10, y_position), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        y_position += 30
-                
-                # Optionally add text to show which face is closest on the flipped image
-                if len(results.multi_face_landmarks) > 1:
-                    cv2.putText(flipped_image, f"Closest face: {closest_idx+1}", (10, y_position), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            
-            # Display the flipped image with correctly oriented text
-            cv2.imshow("Face Mesh Detection", flipped_image)
-            
-            # Break loop on 'q' key press
-            if cv2.waitKey(5) & 0xFF == ord('q'):
-                break
-    
-    # Release resources
-    cap.release()
-    cv2.destroyAllWindows()
+                # Break loop on 'q' key press
+                if cv2.waitKey(5) & 0xFF == ord('q'):
+                    break
+        
+        except KeyboardInterrupt:
+            print("Interrupted by user")
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+        finally:
+            # Release resources
+            cap.release()
+            cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main() 
