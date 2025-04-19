@@ -11,36 +11,27 @@ This script provides real-time facial landmark detection and emotion recognition
 
 ## Requirements
 
-### Basic Requirements
 - Python 3.x
-- OpenCV
-- MediaPipe
-- NumPy
+- Bash shell
 
-### For Advanced Emotion Recognition
-- TensorFlow 2.x
+## Installation and Usage
 
-## Installation
-
-1. Install the basic requirements:
+1. Make the shell script executable:
    ```
-   pip install opencv-python mediapipe numpy
+   chmod +x run_facial_recognition.sh
    ```
 
-2. (Optional) For advanced emotion recognition, install TensorFlow:
+2. Run the shell script:
    ```
-   pip install tensorflow
+   ./run_facial_recognition.sh
    ```
 
-## Usage
+The script will:
+- Create a Python virtual environment (if it doesn't exist)
+- Install all required dependencies
+- Run the facial landmark detection application
 
-Run the script directly:
-
-```
-python facial_landmark_detection.py
-```
-
-- Press 'q' to quit the application.
+Press 'q' to quit the application.
 
 ## Emotion Recognition Models
 
