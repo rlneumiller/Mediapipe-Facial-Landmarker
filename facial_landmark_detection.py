@@ -557,15 +557,11 @@ def main():
                                              (emotion_bbox[2], emotion_bbox[3]), 
                                              emotion_color, 2)
                                 
-                                # Add emotion label at the top of the box
+                                # Remove text from original image - we'll add it to flipped image instead
                                 cv2.rectangle(image, 
                                              (emotion_bbox[0], emotion_bbox[1]-25), 
                                              (emotion_bbox[0] + 100, emotion_bbox[1]), 
                                              emotion_color, -1)
-                                
-                                cv2.putText(image, emotion, 
-                                           (emotion_bbox[0]+5, emotion_bbox[1]-5),
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                             
                             # Draw head pose direction line
                             if nose_points is not None:
@@ -576,13 +572,19 @@ def main():
                 
                 # Add text annotations to the flipped image AFTER flipping
                 if results.multi_face_landmarks:
+                    # Add emotion label to the flipped bounding box
+                    if emotion_bbox[2] > 0:
+                        # Calculate flipped coordinates (x coordinate needs to be flipped)
+                        flipped_x = image.shape[1] - emotion_bbox[0] - 100  # Adjust width of label
+                        flipped_y = emotion_bbox[1]
+                        
+                        # Add the emotion text to the flipped image
+                        cv2.putText(flipped_image, emotion, 
+                                  (flipped_x + 5, flipped_y - 5),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    
                     # Display detected expressions on the flipped image
                     y_position = 30
-                    
-                    # Display the deep learning emotion first
-                    cv2.putText(flipped_image, f"Emotion: {emotion}", (10, y_position), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, emotion_color, 2)
-                    y_position += 30
                     
                     # Display traditional expressions for comparison
                     for expression in expressions:
